@@ -1,0 +1,41 @@
+{
+  "allowedCommands": [
+    {
+      "command": "python3",
+      "args": ["*"]
+    },
+    {
+      "command": "./venv/bin/python3",
+      "args": ["*"]
+    },
+    {
+      "command": "timeout",
+      "args": ["300", "python3", "*"]
+    },
+    {
+      "command": "cat",
+      "args": ["*"]
+    },
+    {
+      "command": "ls",
+      "args": ["*"]
+    },
+    {
+      "command": "gcloud",
+      "args": ["auth", "application-default", "*"]
+    },
+    {
+      "command": "pip3",
+      "args": ["install", "*"]
+    },
+    {
+      "command": "pip",
+      "args": ["install", "*"]
+    },
+    {
+      "command": "export",
+      "args": ["GOOGLE_APPLICATION_CREDENTIALS=*"]
+    }
+  ],
+  "dangerouslyAllowedCommands": []
+}
