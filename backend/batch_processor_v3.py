@@ -28,7 +28,7 @@ def get_access_token():
         client_id = get_secret("MS_CLIENT_ID")
         tenant_id = get_secret("MS_TENANT_ID")
         client_secret = get_secret("MS_CLIENT_SECRET")
-        
+
         authority = f"https://login.microsoftonline.com/{tenant_id}"
         app = msal.ConfidentialClientApplication(client_id, authority=authority, client_credential=client_secret)
         result = app.acquire_token_for_client(scopes=["https://graph.microsoft.com/.default"])
@@ -36,6 +36,41 @@ def get_access_token():
     except Exception as e:
         print(f"認証エラー: {e}")
         return None
+
+# 1-2. システム設定管理（デルタクエリ用スタンプ）
+def get_system_config():
+    """
+    Firestoreからシステム設定（前回の同期状態）を取得
+    Returns:
+        dict: {"deltaLink": str, "last_run_at": timestamp} or None
+    """
+    try:
+        db = firestore.Client(project=GCP_PROJECT_ID, database="uplan")
+        doc_ref = db.collection("system_config").document("onedrive_sync")
+        doc = doc_ref.get()
+        if doc.exists:
+            return doc.to_dict()
+        return None
+    except Exception as e:
+        print(f"⚠️ システム設定取得エラー: {e}")
+        return None
+
+def save_system_config(delta_link):
+    """
+    Firestoreにシステム設定（同期状態）を保存
+    Args:
+        delta_link (str): 次回の差分取得に使用するURL
+    """
+    try:
+        db = firestore.Client(project=GCP_PROJECT_ID, database="uplan")
+        doc_ref = db.collection("system_config").document("onedrive_sync")
+        doc_ref.set({
+            "deltaLink": delta_link,
+            "last_run_at": firestore.SERVER_TIMESTAMP
+        })
+        print(f"✅ デルタリンクを保存しました")
+    except Exception as e:
+        print(f"❌ システム設定保存エラー: {e}")
 
 # 2. パス情報抽出ロジック
 def extract_project_metadata(folder_path):
@@ -222,6 +257,170 @@ def select_project_files(file_list):
         best_review = sorted(candidates_review, key=lambda x: x['updated'], reverse=True)[0]['file']
 
     return all_calc_files, all_drawing_files, best_cert, best_review
+
+# 3-2. デルタクエリによる差分取得
+def fetch_drive_changes(access_token, user_email, delta_link=None):
+    """
+    Microsoft Graph APIのデルタクエリを使用して、前回からの変更を取得
+    Args:
+        access_token (str): アクセストークン
+        user_email (str): ユーザーメールアドレス
+        delta_link (str): 前回の同期で取得したデルタリンク（初回はNone）
+    Returns:
+        tuple: (changed_items, new_delta_link)
+            changed_items: 変更されたファイル・フォルダのリスト
+            new_delta_link: 次回使用するデルタリンク
+    """
+    headers = {"Authorization": f"Bearer {access_token}"}
+    changed_items = []
+
+    # 初回実行時はルートフォルダに対してdeltaクエリを実行
+    if delta_link is None:
+        # TARGET_ROOT_PATHに対してdeltaクエリを実行
+        url = f"https://graph.microsoft.com/v1.0/users/{user_email}/drive/root:/{TARGET_ROOT_PATH}:/delta"
+        print(f"📍 初回デルタクエリ実行: {TARGET_ROOT_PATH}")
+    else:
+        # 前回のデルタリンクを使用
+        url = delta_link
+        print(f"📍 差分取得モード: 前回からの変更のみを取得")
+
+    try:
+        while url:
+            response = requests.get(url, headers=headers)
+            response.raise_for_status()
+            data = response.json()
+
+            # 変更されたアイテムを追加
+            items = data.get('value', [])
+            for item in items:
+                # 削除されたファイルはスキップ
+                if 'deleted' in item:
+                    continue
+
+                # PDFファイルのみを対象
+                if 'file' in item and item.get('name', '').lower().endswith('.pdf'):
+                    changed_items.append(item)
+
+                # フォルダも保持（パス構築に必要）
+                if 'folder' in item:
+                    changed_items.append(item)
+
+            # 次のページまたはデルタリンクを取得
+            url = data.get('@odata.nextLink')  # ページネーション
+            if not url:
+                # 最終的なデルタリンクを取得
+                new_delta_link = data.get('@odata.deltaLink')
+                break
+
+        print(f"✅ デルタクエリ完了: {len(changed_items)}件の変更を検出")
+        return changed_items, new_delta_link
+
+    except Exception as e:
+        print(f"❌ デルタクエリエラー: {e}")
+        return [], None
+
+# 3-3. 差分モードで変更されたフォルダを処理
+def process_changed_folders(access_token, user_email, changed_items):
+    """
+    デルタクエリで検出された変更を処理
+    - 新規追加された構造設計図書フォルダ
+    - PDFが追加された構造設計図書フォルダ
+    を検出して処理する
+    """
+    headers = {"Authorization": f"Bearer {access_token}"}
+    processed_folders = set()  # 重複処理を防ぐ
+
+    # 変更されたPDFファイルの親フォルダを特定
+    folders_with_changes = {}
+
+    for item in changed_items:
+        if 'file' in item and item.get('name', '').lower().endswith('.pdf'):
+            # PDFファイルの親フォルダIDを取得
+            parent_ref = item.get('parentReference', {})
+            parent_id = parent_ref.get('id')
+            parent_path = parent_ref.get('path', '')
+
+            if parent_id:
+                if parent_id not in folders_with_changes:
+                    folders_with_changes[parent_id] = {
+                        'id': parent_id,
+                        'path': parent_path,
+                        'pdf_files': []
+                    }
+                folders_with_changes[parent_id]['pdf_files'].append(item['name'])
+
+        # 新規追加されたフォルダ（構造設計図書フォルダの可能性）
+        if 'folder' in item:
+            folder_name = item.get('name', '')
+            folder_id = item.get('id')
+            # 構造設計図書フォルダか確認
+            if ('構造設計図書' in folder_name or '構造計算書' in folder_name) and '○' not in folder_name:
+                if folder_id not in folders_with_changes:
+                    parent_ref = item.get('parentReference', {})
+                    folders_with_changes[folder_id] = {
+                        'id': folder_id,
+                        'name': folder_name,
+                        'path': parent_ref.get('path', ''),
+                        'pdf_files': [],
+                        'is_new_folder': True
+                    }
+
+    print(f"\n📁 変更があったフォルダ: {len(folders_with_changes)}件")
+
+    # 各フォルダを処理
+    for folder_id, folder_info in folders_with_changes.items():
+        if folder_id in processed_folders:
+            continue
+
+        print(f"\n🔍 フォルダを処理中: {folder_info.get('name', folder_id)}")
+        if folder_info.get('pdf_files'):
+            print(f"   追加されたPDF: {', '.join(folder_info['pdf_files'][:3])}{'...' if len(folder_info['pdf_files']) > 3 else ''}")
+
+        try:
+            # フォルダ内の全ファイルを取得
+            folder_url = f"https://graph.microsoft.com/v1.0/users/{user_email}/drive/items/{folder_id}/children"
+            response = requests.get(folder_url, headers=headers)
+            response.raise_for_status()
+            folder_items = response.json().get('value', [])
+
+            # フォルダ情報も取得
+            folder_detail_url = f"https://graph.microsoft.com/v1.0/users/{user_email}/drive/items/{folder_id}"
+            folder_response = requests.get(folder_detail_url, headers=headers)
+            folder_detail = folder_response.json() if folder_response.status_code == 200 else {}
+
+            # 構造計算書・図面・証明書を選定
+            all_calc_files, all_drawing_files, target_cert, target_review = select_project_files(folder_items)
+
+            if all_calc_files:
+                # フォルダパスを構築
+                parent_ref = folder_detail.get('parentReference', {})
+                folder_path = parent_ref.get('path', '').replace('/drive/root:', '')
+                folder_name = folder_detail.get('name', '')
+                full_path = f"{folder_path}/{folder_name}".lstrip('/')
+
+                print(f"   ✅ 構造計算書を検出: {len(all_calc_files)}ファイル")
+
+                # フォルダ情報を構築
+                project_folder_info = {
+                    "id": folder_id,
+                    "name": folder_name,
+                    "webUrl": folder_detail.get('webUrl', ''),
+                    "fullPath": full_path,
+                    "allFiles": folder_items
+                }
+
+                # 既存の処理関数を呼び出し
+                process_project_files(access_token, user_email, all_calc_files, all_drawing_files,
+                                     target_cert, target_review, project_folder_info)
+                processed_folders.add(folder_id)
+            else:
+                print(f"   ⚠️ 構造計算書PDFが見つかりませんでした")
+
+        except Exception as e:
+            print(f"   ❌ フォルダ処理エラー: {e}")
+            continue
+
+    print(f"\n✅ 差分モードで {len(processed_folders)}件のフォルダを処理しました")
 
 # 4. フォルダ探索
 def process_folder_recursive(access_token, folder_url, user_email, current_path=""):
@@ -883,12 +1082,42 @@ def analyze_with_gemini(file_data_list, file_name_hints=None):
 if __name__ == "__main__":
     print("🚀 バッチ処理 v3 を開始します...")
     token = get_access_token()
-    if token:
-        # パスに日本語が含まれるためURLエンコード等はrequestsに任せるが、
-        # graph APIのパス指定形式に従い構築
-        # 注: TARGET_ROOT_PATH の先頭に / は不要
+    if not token:
+        print("❌ 認証失敗のため終了します")
+        exit(1)
+
+    # システム設定から前回の同期状態を取得
+    system_config = get_system_config()
+    delta_link = system_config.get('deltaLink') if system_config else None
+
+    new_delta_link = None
+
+    if delta_link:
+        # 【差分モード】前回からの変更のみを処理
+        print("\n📊 差分更新モード: 前回からの変更のみを処理します")
+        changed_items, new_delta_link = fetch_drive_changes(token, TARGET_USER_EMAIL, delta_link)
+
+        if changed_items:
+            print(f"📝 {len(changed_items)}件の変更を検出しました")
+            process_changed_folders(token, TARGET_USER_EMAIL, changed_items)
+        else:
+            print("✨ 変更はありませんでした")
+
+    else:
+        # 【全件スキャンモード】初回実行または強制全件スキャン
+        print("\n📊 全件スキャンモード: すべてのフォルダを探索します")
         start_url = f"https://graph.microsoft.com/v1.0/users/{TARGET_USER_EMAIL}/drive/root:/{TARGET_ROOT_PATH}:/children"
 
         # TARGET_ROOT_PATHを初期パスとして設定
         process_folder_recursive(token, start_url, TARGET_USER_EMAIL, TARGET_ROOT_PATH)
-        print("\n🎉 全処理が完了しました")
+
+        # 全件スキャン完了後、デルタリンクを取得して保存
+        print("\n📍 初回デルタリンクを取得中...")
+        _, new_delta_link = fetch_drive_changes(token, TARGET_USER_EMAIL, None)
+
+    # デルタリンクを保存（次回の差分取得用）
+    if new_delta_link:
+        save_system_config(new_delta_link)
+        print(f"💾 次回は差分更新モードで実行されます")
+
+    print("\n🎉 全処理が完了しました")
