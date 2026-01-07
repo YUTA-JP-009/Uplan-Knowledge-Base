@@ -12,10 +12,10 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 import time
 
 # 新しいコレクション名
-NEW_COLLECTION_NAME = "Parallel_Test_2026_01_06"
+NEW_COLLECTION_NAME = "Projects_2026_01_07"
 
 # 処理対象の案件リスト（親フォルダまでのパスを指定 - スクリプトが構造設計図書フォルダを自動探索）
-# folder_urlフィールドを追加するため全5件を再実行
+# 重複チェック機能とドキュメントID改善を含む新コレクションで再実行
 TARGET_PROJECTS = [
     "001_Ｕ'plan_全社/01.構造設計/01.木造（在来軸組）/□た行/A00790_多田建築設計事務所/2025001_松下邸",
     "001_Ｕ'plan_全社/01.構造設計/01.木造（在来軸組）/□Ａ行/453 Luce建築設計事務所/2025003_フルイチ様オフィス新築工事",
@@ -288,11 +288,18 @@ def process_single_project_path(project_path, access_token, user_email, collecti
         return False, project_path, f"エラー: {str(e)[:100]}"
 
 def main():
+    import time as time_module
+    from datetime import datetime
+
+    start_time = time_module.time()
+    start_datetime = datetime.now()
+
     print("=" * 80)
     print("🚀 複数案件の並列処理抽出")
     print("=" * 80)
     print(f"📊 処理対象: {len(TARGET_PROJECTS)}件")
     print(f"💾 保存先コレクション: {NEW_COLLECTION_NAME}")
+    print(f"⏰ 開始時刻: {start_datetime.strftime('%Y/%m/%d %H:%M:%S')}")
     print("=" * 80)
 
     # 認証
@@ -334,6 +341,12 @@ def main():
             print(f"   パス: {path}")
             print(f"   エラー: {str(e)[:100]}")
 
+    end_time = time_module.time()
+    end_datetime = datetime.now()
+    elapsed_seconds = int(end_time - start_time)
+    elapsed_minutes = elapsed_seconds // 60
+    elapsed_seconds_remainder = elapsed_seconds % 60
+
     print("\n" + "=" * 80)
     print("📊 処理完了サマリー")
     print("=" * 80)
@@ -341,6 +354,9 @@ def main():
     print(f"❌ 失敗: {error_count}件")
     print(f"📝 合計: {len(TARGET_PROJECTS)}件")
     print(f"💾 保存先: Firestore > uplan > {NEW_COLLECTION_NAME}")
+    print(f"⏰ 開始時刻: {start_datetime.strftime('%Y/%m/%d %H:%M:%S')}")
+    print(f"⏰ 終了時刻: {end_datetime.strftime('%Y/%m/%d %H:%M:%S')}")
+    print(f"⏱️  処理時間: {elapsed_minutes}分{elapsed_seconds_remainder}秒")
     print("=" * 80)
 
 if __name__ == "__main__":
