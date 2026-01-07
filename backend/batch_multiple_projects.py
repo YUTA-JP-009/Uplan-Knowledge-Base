@@ -199,8 +199,12 @@ def process_single_project_path(project_path, access_token, user_email, collecti
         # Firestoreに保存
         db = firestore.Client(project=GCP_PROJECT_ID, database="uplan")
 
-        # ドキュメントIDを生成
-        doc_id = f"project_{folder_id}"
+        # ドキュメントIDを生成（物件名_日時）
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%Y/%m/%d %H:%M:%S")
+        # ドキュメントIDに使えない文字を置換
+        safe_project_name = (project_name or "不明物件").replace("/", "-").replace(":", "-")
+        doc_id = f"{safe_project_name}_{timestamp}"
 
         # 保存データを構築
         basic = analysis_result.get("basic", {})
