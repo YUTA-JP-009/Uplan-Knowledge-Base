@@ -104,6 +104,20 @@ def process_single_project_path(project_path, access_token, user_email, collecti
         folder_name = target_folder.get('name', '')
         folder_web_url = target_folder.get('webUrl', '')
 
+        # 重複チェック: 既にこのfolder_idが登録されているか確認
+        db = firestore.Client(project=GCP_PROJECT_ID, database="uplan")
+        existing_query = db.collection(collection_name).where("file_id", "==", folder_id).limit(1).stream()
+        existing_docs = list(existing_query)
+
+        if len(existing_docs) > 0:
+            existing_doc = existing_docs[0]
+            existing_data = existing_doc.to_dict()
+            existing_project_name = existing_data.get('project_name', 'N/A')
+            print(f"   ⏭️  スキップ: すでに登録済み")
+            print(f"   📝 既存ドキュメント: {existing_doc.id}")
+            print(f"   🏢 物件名: {existing_project_name}")
+            return True, project_path, f"スキップ（登録済み: {existing_project_name}）"
+
         # フォルダ名から作成年月を抽出（例：20240912 → 2024年9月）
         import re
         created_year_month = None
@@ -195,9 +209,6 @@ def process_single_project_path(project_path, access_token, user_email, collecti
 
         # フォルダパスからメタデータ抽出
         metadata = extract_project_metadata(project_path)
-
-        # Firestoreに保存
-        db = firestore.Client(project=GCP_PROJECT_ID, database="uplan")
 
         # ドキュメントIDを生成（物件名_日時）
         from datetime import datetime
