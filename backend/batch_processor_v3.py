@@ -564,11 +564,23 @@ def process_project_files(access_token, user_email, calc_files, drawing_files, c
     file_id = primary_file['id']
     file_name = primary_file['name']
 
-    # 重複チェック (最初の計算書のIDをキーにする)
+    # フォルダIDを取得
+    folder_id = project_folder_info.get('id')
+
+    # 重複チェック: folder_idで既存案件を検索
     db = firestore.Client(project=GCP_PROJECT_ID, database="uplan")
-    doc_ref = db.collection("Beta_2025_12_24").document(file_id)
-    if doc_ref.get().exists:
-        print(f"   ℹ️ 処理済みのためスキップ ({file_name})")
+    existing_query = db.collection("Beta_2025_12_24").where("project_folder_id", "==", folder_id).limit(1).stream()
+    existing_docs = list(existing_query)
+
+    if len(existing_docs) > 0:
+        existing_doc = existing_docs[0]
+        existing_data = existing_doc.to_dict()
+        existing_project_name = existing_data.get('project_name', 'N/A')
+        existing_folder_name = existing_data.get('project_folder_name', 'N/A')
+        print(f"   ⏭️  スキップ: すでに登録済み")
+        print(f"   📝 既存ドキュメント: {existing_doc.id}")
+        print(f"   🏢 物件名: {existing_project_name}")
+        print(f"   📁 フォルダ: {existing_folder_name}")
         return
 
     # フォルダパスからメタデータを抽出
@@ -1080,6 +1092,14 @@ def analyze_with_gemini(file_data_list, file_name_hints=None):
 
 # --- 実行 ---
 if __name__ == "__main__":
+    import argparse
+
+    # コマンドライン引数の解析
+    parser = argparse.ArgumentParser(description="Uplan Knowledge Base バッチプロセッサ v3")
+    parser.add_argument('--mode', choices=['full', 'delta'], default='auto',
+                       help='実行モード: full=全件スキャン, delta=差分更新, auto=自動判定(デフォルト)')
+    args = parser.parse_args()
+
     print("🚀 バッチ処理 v3 を開始します...")
     token = get_access_token()
     if not token:
@@ -1092,7 +1112,21 @@ if __name__ == "__main__":
 
     new_delta_link = None
 
-    if delta_link:
+    # モード判定
+    if args.mode == 'delta':
+        # 強制差分モード
+        if not delta_link:
+            print("❌ デルタリンクが存在しません。初回は --mode full で実行してください")
+            exit(1)
+        force_delta = True
+    elif args.mode == 'full':
+        # 強制全件スキャンモード
+        force_delta = False
+    else:
+        # 自動判定（デルタリンクの有無で判定）
+        force_delta = bool(delta_link)
+
+    if force_delta and delta_link:
         # 【差分モード】前回からの変更のみを処理
         print("\n📊 差分更新モード: 前回からの変更のみを処理します")
         changed_items, new_delta_link = fetch_drive_changes(token, TARGET_USER_EMAIL, delta_link)
