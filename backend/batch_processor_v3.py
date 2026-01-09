@@ -6,6 +6,10 @@ import vertexai
 from vertexai.generative_models import GenerativeModel, Part, GenerationConfig
 from google.cloud import secretmanager
 from google.cloud import firestore
+from datetime import datetime, timezone, timedelta
+
+# 日本時間のタイムゾーン
+JST = timezone(timedelta(hours=9))
 
 # --- 設定 ---
 GCP_PROJECT_ID = "uplan-knowledge-base"
@@ -724,8 +728,8 @@ def process_project_files(access_token, user_email, calc_files, drawing_files, c
             "submission_month": metadata['submissionMonth'],
             "project_name": metadata['projectName'],
             "model_version": "gemini-2.5-pro",
-            "processed_at": firestore.SERVER_TIMESTAMP,
-            "extracted_at": firestore.SERVER_TIMESTAMP,
+            "processed_at": datetime.now(JST).isoformat(),
+            "extracted_at": datetime.now(JST).isoformat(),
             "status": "completed"
         }
         doc_ref.set(save_data)

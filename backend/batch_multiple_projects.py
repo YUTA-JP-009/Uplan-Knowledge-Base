@@ -212,7 +212,7 @@ def process_single_project_path(project_path, access_token, user_email, collecti
 
         # ドキュメントIDを生成（物件名_日時）
         from datetime import datetime
-        timestamp = datetime.now().strftime("%Y/%m/%d %H:%M:%S")
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         # ドキュメントIDに使えない文字を置換
         safe_project_name = (project_name or "不明物件").replace("/", "-").replace(":", "-")
         doc_id = f"{safe_project_name}_{timestamp}"

@@ -16,7 +16,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # アプリケーションコードをコピー
-COPY batch_processor_v3_parallel.py .
+COPY batch_processor_v4_rate_optimized.py .
 
 # 環境変数の設定
 ENV PYTHONUNBUFFERED=1
@@ -27,7 +27,7 @@ ENV MALLOC_TRIM_THRESHOLD_=100000
 
 # コンテナ起動時にスクリプトを実行
 # コマンドライン引数はCloud Run Jobsの設定で指定可能
-ENTRYPOINT ["python", "batch_processor_v3_parallel.py"]
+ENTRYPOINT ["python", "batch_processor_v4_rate_optimized.py"]
 
 # デフォルト引数（上書き可能）
-CMD ["--target-path", "001_Ｕ'plan_全社/01.構造設計/01.木造（在来軸組）", "--workers", "5", "--mode", "full"]
+CMD ["--target-path", "001_Ｕ'plan_全社/01.構造設計/01.木造（在来軸組）", "--workers", "10"]

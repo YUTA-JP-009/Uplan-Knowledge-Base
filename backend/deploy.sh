@@ -19,6 +19,14 @@ echo "リージョン: ${REGION}"
 echo "ジョブ名: ${JOB_NAME}"
 echo "=================================================="
 
+# 0. 認証確認
+echo "📍 ステップ0: GCP認証確認"
+if ! gcloud auth list --filter=status:ACTIVE --format="value(account)" | grep -q "@"; then
+    echo "⚠️  GCPに認証されていません。認証を開始します..."
+    gcloud auth login
+fi
+echo "✅ 認証済み: $(gcloud auth list --filter=status:ACTIVE --format='value(account)')"
+
 # 1. GCPプロジェクトを設定
 echo "📍 ステップ1: GCPプロジェクトを設定"
 gcloud config set project ${PROJECT_ID}
@@ -33,9 +41,9 @@ gcloud services enable \
   secretmanager.googleapis.com \
   firestore.googleapis.com
 
-# 3. Dockerイメージをビルド
-echo "📍 ステップ3: Dockerイメージをビルド"
-docker build -t ${IMAGE_NAME}:latest .
+# 3. Dockerイメージをビルド（AMD64プラットフォーム指定）
+echo "📍 ステップ3: Dockerイメージをビルド（AMD64）"
+docker build --platform linux/amd64 -t ${IMAGE_NAME}:latest .
 
 # 4. Container Registryにプッシュ
 echo "📍 ステップ4: Container Registryにプッシュ"
@@ -43,22 +51,28 @@ docker push ${IMAGE_NAME}:latest
 
 # 5. Cloud Run Jobsをデプロイ
 echo "📍 ステップ5: Cloud Run Jobsをデプロイ"
-gcloud run jobs create ${JOB_NAME} \
-  --image ${IMAGE_NAME}:latest \
-  --region ${REGION} \
-  --memory 8Gi \
-  --cpu 4 \
-  --max-retries 2 \
-  --task-timeout 3600s \
-  --execute-now=false \
-  --set-env-vars GOOGLE_CLOUD_PROJECT=${PROJECT_ID} \
-  || gcloud run jobs update ${JOB_NAME} \
-     --image ${IMAGE_NAME}:latest \
-     --region ${REGION} \
-     --memory 8Gi \
-     --cpu 4 \
-     --max-retries 2 \
-     --task-timeout 3600s
+# ジョブが存在するかチェック
+if gcloud run jobs describe ${JOB_NAME} --region ${REGION} &> /dev/null; then
+  echo "既存のジョブを更新します..."
+  gcloud run jobs update ${JOB_NAME} \
+    --image ${IMAGE_NAME}:latest \
+    --region ${REGION} \
+    --memory 8Gi \
+    --cpu 4 \
+    --max-retries 2 \
+    --task-timeout 3600s \
+    --set-env-vars GOOGLE_CLOUD_PROJECT=${PROJECT_ID}
+else
+  echo "新しいジョブを作成します..."
+  gcloud run jobs create ${JOB_NAME} \
+    --image ${IMAGE_NAME}:latest \
+    --region ${REGION} \
+    --memory 8Gi \
+    --cpu 4 \
+    --max-retries 2 \
+    --task-timeout 3600s \
+    --set-env-vars GOOGLE_CLOUD_PROJECT=${PROJECT_ID}
+fi
 
 echo "=================================================="
 echo "✅ デプロイ完了！"

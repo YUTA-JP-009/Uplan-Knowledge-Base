@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual Environment
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+.claude/
+
+# Git
+.git/
+.gitignore
+
+# Documentation
+*.md
+DEPLOYMENT_GUIDE.md
+README_PARALLEL.md
+METADATA_EXTRACTION_TEST_RESULTS.md
+
+# Test files
+test_*.py
+*_test.py
+
+# Other batch scripts (only include the parallel version)
+batch_processor_v3.py
+batch_multiple_projects.py
+delete_firestore_data.py
+test_firestore.py
+test_full_path_extraction.py
+test_metadata_extraction.py
+test_parallel_local.py
+
+# Deployment scripts
+deploy.sh
+
+# Logs
+*.log

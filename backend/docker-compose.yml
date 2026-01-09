@@ -1,0 +1,50 @@
+version: '3.8'
+
+services:
+  batch-processor:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      platform: linux/amd64
+    image: uplan-batch-processor:local
+    container_name: uplan-batch-processor
+    environment:
+      - GOOGLE_CLOUD_PROJECT=uplan-knowledge-base
+      - PYTHONUNBUFFERED=1
+      - MALLOC_TRIM_THRESHOLD_=100000
+    volumes:
+      # Google Cloud認証情報をマウント（ローカル開発用）
+      - ~/.config/gcloud:/root/.config/gcloud:ro
+    command: >
+      --target-path "001_Ｕ'plan_全社/01.構造設計/01.木造（在来軸組）/□あ行"
+      --workers 5
+      --mode full
+    deploy:
+      resources:
+        limits:
+          cpus: '4'
+          memory: 8G
+        reservations:
+          cpus: '2'
+          memory: 4G
+    restart: "no"
+
+  # デバッグ用: シェルを開いてコンテナ内で作業する
+  debug:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      platform: linux/amd64
+    image: uplan-batch-processor:local
+    container_name: uplan-batch-debug
+    environment:
+      - GOOGLE_CLOUD_PROJECT=uplan-knowledge-base
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ~/.config/gcloud:/root/.config/gcloud:ro
+      # ローカルのソースコードをマウントして変更を即座に反映
+      - ./batch_processor_v3_parallel.py:/app/batch_processor_v3_parallel.py:ro
+    entrypoint: ["/bin/bash"]
+    stdin_open: true
+    tty: true
+    restart: "no"

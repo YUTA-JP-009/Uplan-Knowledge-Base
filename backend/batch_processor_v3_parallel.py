@@ -22,6 +22,10 @@ from vertexai.generative_models import GenerativeModel, Part, GenerationConfig
 from google.cloud import secretmanager
 from google.cloud import firestore
 from google.api_core import retry, exceptions
+from datetime import datetime, timezone, timedelta
+
+# 日本時間のタイムゾーン
+JST = timezone(timedelta(hours=9))
 
 # --- 設定 ---
 GCP_PROJECT_ID = "uplan-knowledge-base"
@@ -436,6 +440,13 @@ def process_single_project(project_info: Dict, access_token: str, user_email: st
     headers = {"Authorization": f"Bearer {access_token}"}
 
     try:
+        # フォルダの詳細情報とwebUrlを取得
+        folder_detail_url = f"https://graph.microsoft.com/v1.0/users/{user_email}/drive/items/{folder_id}"
+        folder_detail_response = requests.get(folder_detail_url, headers=headers, timeout=30)
+        folder_detail_response.raise_for_status()
+        folder_detail = folder_detail_response.json()
+        folder_web_url = folder_detail.get('webUrl', '')
+
         # フォルダ内のファイル一覧を取得
         folder_url = f"https://graph.microsoft.com/v1.0/users/{user_email}/drive/items/{folder_id}/children"
         response = requests.get(folder_url, headers=headers, timeout=60)
@@ -447,6 +458,47 @@ def process_single_project(project_info: Dict, access_token: str, user_email: st
 
         if not calc_files:
             return False, f"構造計算書PDFが見つかりません"
+
+        # 重複チェック: 既にこのfolder_idが登録されているか確認
+        db = firestore.Client(project=GCP_PROJECT_ID, database="uplan")
+        existing_query = db.collection("Projects_2026_01_07").where("file_id", "==", folder_id).limit(1).stream()
+        existing_docs = list(existing_query)
+
+        if len(existing_docs) > 0:
+            existing_doc = existing_docs[0]
+            existing_data = existing_doc.to_dict()
+            existing_project_name = existing_data.get('project_name', 'N/A')
+            return False, f"スキップ（登録済み: {existing_project_name}）"
+
+        # フォルダ名から作成年月を抽出（例：20240912 → 2024年9月）
+        import re
+        created_year_month = None
+        date_match = re.match(r'^(\d{4})(\d{2})\d{2}', folder_name)
+        if date_match:
+            year = date_match.group(1)
+            month = date_match.group(2).lstrip('0')  # 先頭の0を削除
+            created_year_month = f"{year}年{month}月"
+
+        # full_pathから物件名を抽出
+        # 例: 001_Ｕ'plan_全社/.../豊中の貸倉庫兼オフィス → 豊中の貸倉庫兼オフィス
+        project_name = None
+        path_parts = full_path.split('/')
+        # 最後の部分が物件名（取引先フォルダの次）
+        if len(path_parts) >= 5:
+            # パターン1: 取引先配下に直接物件名がある場合
+            # 例: .../329 PROCESS5 DESIGN/豊中の貸倉庫兼オフィス
+            last_part = path_parts[-1]
+            # 数字で始まる場合（2024009_など）はスキップして次を使う
+            if not re.match(r'^\d{4,7}_', last_part):
+                project_name = last_part
+            elif len(path_parts) >= 6:
+                # パターン2: 数字フォルダの場合、その前の部分から抽出
+                # 例: .../2024009_（仮称）三田2丁目AP／2024010_設計変更
+                number_folder = last_part
+                # "2024009_物件名／2024010_変更" の形式から物件名を抽出
+                name_match = re.match(r'^\d{4,7}_(.+?)(?:／|$)', number_folder)
+                if name_match:
+                    project_name = name_match.group(1)
 
         # PDFをダウンロード
         file_data_list = []
@@ -483,8 +535,12 @@ def process_single_project(project_info: Dict, access_token: str, user_email: st
         # Firestoreに保存
         db = firestore.Client(project=GCP_PROJECT_ID, database="uplan")
 
-        # ドキュメントIDを生成（フォルダIDを使用）
-        doc_id = f"project_{folder_id}"
+        # ドキュメントIDを生成（物件名_日時）
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        # ドキュメントIDに使えない文字を置換
+        safe_project_name = (project_name or "不明物件").replace("/", "-").replace(":", "-")
+        doc_id = f"{safe_project_name}_{timestamp}"
 
         # 保存データを構築
         basic = analysis_result.get("basic", {})
@@ -527,9 +583,12 @@ def process_single_project(project_info: Dict, access_token: str, user_email: st
             # システム管理用フィールド
             "analysis_result": analysis_result,
             "file_id": folder_id,
-            "extracted_at": firestore.SERVER_TIMESTAMP,
+            "extracted_at": datetime.now(JST).isoformat(),
+            "created_year_month": created_year_month,  # 構造計算書の作成年月
+            "project_name": project_name,  # 物件名
             "folder_name": folder_name,
             "folder_path": full_path,
+            "folder_url": folder_web_url,  # フォルダのURL
             "file_count": {
                 "calc": len(calc_files),
                 "drawing": len(drawing_files),
@@ -539,7 +598,7 @@ def process_single_project(project_info: Dict, access_token: str, user_email: st
         }
 
         # Firestoreに保存
-        collection_ref = db.collection("Beta_2025_12_24")
+        collection_ref = db.collection("Projects_2026_01_07")
         collection_ref.document(doc_id).set(save_data)
 
         return True, f"成功: {len(calc_files)}ファイル解析"
@@ -598,6 +657,11 @@ def process_projects_parallel(project_folders: List[Dict], max_workers: int = 5)
 # 9. メイン処理
 def main():
     """メイン処理"""
+    # 実行時間トラッキング開始
+    from datetime import datetime
+    start_time = time.time()
+    start_datetime = datetime.now()
+
     parser = argparse.ArgumentParser(description='Uplan Knowledge Base - Batch Processor (並列処理版)')
     parser.add_argument('--target-path', type=str, default=DEFAULT_TARGET_PATH,
                        help=f'抽出対象のルートパス (デフォルト: {DEFAULT_TARGET_PATH})')
@@ -614,6 +678,7 @@ def main():
     print(f"📂 ターゲットパス: {args.target_path}")
     print(f"⚙️  並列処理数: {args.workers}")
     print(f"🔄 実行モード: {args.mode}")
+    print(f"⏰ 開始時刻: {start_datetime.strftime('%Y/%m/%d %H:%M:%S')}")
     print("=" * 80)
 
     # 認証
@@ -662,7 +727,20 @@ def main():
         if new_delta_link:
             save_system_config(new_delta_link)
 
-    print("\n🎉 全処理が完了しました")
+    # 実行時間トラッキング終了
+    end_time = time.time()
+    end_datetime = datetime.now()
+    elapsed_seconds = int(end_time - start_time)
+    elapsed_minutes = elapsed_seconds // 60
+    elapsed_seconds_remainder = elapsed_seconds % 60
+
+    print("\n" + "=" * 80)
+    print("🎉 全処理が完了しました")
+    print("=" * 80)
+    print(f"⏰ 開始時刻: {start_datetime.strftime('%Y/%m/%d %H:%M:%S')}")
+    print(f"⏰ 終了時刻: {end_datetime.strftime('%Y/%m/%d %H:%M:%S')}")
+    print(f"⏱️  処理時間: {elapsed_minutes}分{elapsed_seconds_remainder}秒")
+    print("=" * 80)
 
 if __name__ == "__main__":
     main()
